@@ -137,19 +137,8 @@ if df_original.empty:
     st.stop()
 
 # HEADER PRINCIPAL
-st.markdown(
-    """
-<div class="main-header">
-    <h1 style="color: black; text-align: center; margin: 0;">
-        ELEIÇÕES PRESIDENCIAIS BRASIL 2026
-    </h1>
-    <p style="color: black; text-align: center; margin: 0;">
-        Acompanhamento das Pesquisas de Intenção de Voto
-    </p>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+st.title("ELEIÇÕES PRESIDENCIAIS BRASIL 2026", )
+st.markdown("Acompanhamento das Pesquisas de Intenção de Voto")
 
 # SIDEBAR
 st.sidebar.header("🔧 Filtros e Configurações")
@@ -367,4 +356,5 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
 
