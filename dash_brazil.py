@@ -137,10 +137,9 @@ if df_original.empty:
     st.stop()
 
 # HEADER PRINCIPAL
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    st.title("ELEIÇÕES PRESIDENCIAIS BRASIL 2026", )
-    st.markdown("Acompanhamento das Pesquisas de Intenção de Voto")
+
+st.title("ELEIÇÕES PRESIDENCIAIS BRASIL 2026", )
+st.markdown("Acompanhamento das Pesquisas de Intenção de Voto")
 
 # SIDEBAR
 st.sidebar.header("🔧 Filtros e Configurações")
