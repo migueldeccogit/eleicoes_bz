@@ -268,7 +268,11 @@ with col2:
     # Pontos individuais (transparentes)
     for candidato in selected_candidates:
         if candidato in df_filtered.columns:
-            data_candidato = df_filtered[df_filtered[candidato].notna()]
+            data_candidato = df_original[df_original[candidato].notna()]
+            data_candidato = data_candidato[
+                (data_candidato["Data"] >= pd.to_datetime(selected_date_range[0]))
+                & (data_candidato["Data"] <= pd.to_datetime(selected_date_range[1]))
+            ]
             fig2.add_trace(
                 go.Scatter(
                     x=data_candidato["Data"],
@@ -363,3 +367,4 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+
