@@ -50,12 +50,12 @@ de_para = {
 }
 
 
-def scrapping_wikipedia(URL, headers):
+def scrapping_wikipedia(URL, headers, table):
     """Função para extrair dados da Wikipedia"""
     response = requests.get(URL, headers=headers)
     soup = BeautifulSoup(response.content, "html.parser")
     tables = soup.find_all("table", {"class": "wikitable"})
-    table_25 = tables[0]
+    table_25 = tables[table]
 
     columns = []
     header_rows = table_25.find_all("tr")[:2]
@@ -87,19 +87,46 @@ def corrige_datas(df, col_date):
     return df
 
 
+def processar_dados(df, candidatos):
+    """Processa e calcula médias móveis para os dados"""
+    for col in candidatos:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Calcular médias móveis
+    df_media = df.groupby("Data")[candidatos].mean().reset_index()
+    df_media = df_media.sort_values("Data")
+
+    # Média móvel de 3 períodos
+    for col in candidatos:
+        if col in df_media.columns:
+            df_media[col] = df_media[col].rolling(window=3, min_periods=1).mean()
+
+    return df, df_media
+
+
 @st.cache_data(ttl=1800)  # Cache por 30 minutos
 def carregar_dados():
     """Carrega e processa os dados"""
     try:
-        df_25 = scrapping_wikipedia(URL, headers)
+        # Primeiro turno
+        df_25 = scrapping_wikipedia(URL, headers, table=0)
         df_25 = corrige_datas(df_25, "Polling period")
         df_25 = df_25.rename(columns=de_para)
         df_25 = df_25[list(de_para.values())]
         df_25 = df_25.replace("—", np.nan)
-        df_25 = df_25.sort_values("Data")
+        df_25 = df_25.sort_values("Data", ascending=False)
 
-        # Converter colunas numéricas
-        candidatos = [
+        # Segundo turno
+        df_25_2 = scrapping_wikipedia(URL, headers, table=1)
+        df_25_2 = corrige_datas(df_25_2, "Polling period")
+        df_25_2 = df_25_2.rename(columns=de_para)
+        df_25_2 = df_25_2[["Instituto", "Data", "Lula", "Tarcísio"]]
+        df_25_2 = df_25_2.replace("—", np.nan)
+        df_25_2 = df_25_2.sort_values("Data", ascending=False)
+
+        # Processar dados
+        candidatos_1t = [
             "Lula",
             "Tarcísio",
             "Ciro Gomes",
@@ -109,161 +136,99 @@ def carregar_dados():
             "Outros",
             "Branco / Nulo / Indeciso",
         ]
-        for col in candidatos:
-            if col in df_25.columns:
-                df_25[col] = pd.to_numeric(df_25[col], errors="coerce")
+        candidatos_2t = ["Lula", "Tarcísio"]
 
-        # Calcular médias móveis
-        df_media = df_25.groupby("Data")[candidatos].mean().reset_index()
-        df_media = df_media.sort_values("Data")
+        df_25, df_media = processar_dados(df_25, candidatos_1t)
+        df_25_2, df_media_2t = processar_dados(df_25_2, candidatos_2t)
 
-        # Média móvel de 3 períodos (adaptado para Brasil)
-        for col in candidatos:
-            if col in df_media.columns:
-                df_media[col] = df_media[col].rolling(window=3, min_periods=1).mean()
-
-        return df_25, df_media
+        return df_25, df_media, df_25_2, df_media_2t
 
     except Exception as e:
         st.error(f"Erro ao carregar dados: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 
-# Carregar dados
-df_original, df_media = carregar_dados()
+def filtrar_dados_por_data(df, data_inicio, data_fim):
+    """Filtra dataframe por período de datas"""
+    return df[
+        (df["Data"] >= pd.to_datetime(data_inicio))
+        & (df["Data"] <= pd.to_datetime(data_fim))
+    ].copy()
 
-if df_original.empty:
-    st.error("Não foi possível carregar os dados. Verifique sua conexão.")
-    st.stop()
 
-# HEADER PRINCIPAL
+def filtrar_dados_por_instituto(df, instituto_selecionado):
+    """Filtra dataframe por instituto"""
+    if instituto_selecionado != "Todos":
+        return df[df["Instituto"] == instituto_selecionado]
+    return df
 
-st.title("ELEIÇÕES PRESIDENCIAIS BRASIL 2026", )
-st.markdown("Acompanhamento das Pesquisas de Intenção de Voto")
 
-# SIDEBAR
-st.sidebar.header("🔧 Filtros e Configurações")
+def criar_metricas(df_media, candidatos, titulo):
+    """Cria métricas da última pesquisa"""
+    st.subheader(titulo)
 
-# Filtros
-institutos = df_original["Instituto"].dropna().unique()
-candidatos_principais = [
-    "Lula",
-    "Tarcísio",
-    "Zema",
-    "Branco / Nulo / Indeciso",
-]
+    if not df_media.empty and not df_media["Data"].isna().all():
+        ultima_pesquisa = df_media.loc[df_media["Data"] == df_media["Data"].max()]
 
-# Data range
-if not df_original["Data"].isna().all():
-    min_date = df_original["Data"].min().date()
-    max_date = df_original["Data"].max().date()
+        cols = st.columns(len(candidatos))
 
-    selected_date_range = st.sidebar.slider(
-        "📅 Período de Análise",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date),
-    )
-else:
-    selected_date_range = (datetime.date.today(), datetime.date.today())
+        for i, candidato in enumerate(candidatos):
+            with cols[i]:
+                if candidato in ultima_pesquisa.columns:
+                    valor = ultima_pesquisa[candidato].iloc[0]
+                    if not pd.isna(valor):
+                        st.metric(label=candidato, value=f"{valor:.1f}%")
 
-# Instituto
-selected_instituto = st.sidebar.selectbox(
-    "🏢 Instituto de Pesquisa", options=["Todos"] + list(institutos)
-)
 
-# Candidatos
-selected_candidates = st.pills(
-    "👥 Candidatos",
-    options=candidatos_principais + ["Ciro Gomes", "Ratinho Jr.", "Caiado", "Outros"],
-    default=candidatos_principais,
-    selection_mode="multi",
-)
+def criar_grafico_evolucao(df_filtrado, candidatos, titulo_instituto):
+    """Cria gráfico de evolução por instituto"""
+    fig = go.Figure()
 
-# MÉTRICAS PRINCIPAIS
-st.subheader("📊 Cenário Atual - Última Pesquisa")
-
-if not df_media.empty and not df_media["Data"].isna().all():
-    ultima_pesquisa = df_media.loc[df_media["Data"] == df_media["Data"].max()]
-
-    cols_metricas = st.columns(4)
-
-    for i, candidato in enumerate(candidatos_principais[:4]):
-        with cols_metricas[i]:
-            if candidato in ultima_pesquisa.columns:
-                valor = ultima_pesquisa[candidato].iloc[0]
-                if not pd.isna(valor):
-                    st.metric(label=candidato, value=f"{valor:.1f}%", delta=None)
-
-# FILTRAR DADOS
-df_filtered = df_original.copy()
-df_media_filtered = df_media.copy()
-
-# Filtro por data
-df_filtered = df_filtered[
-    (df_filtered["Data"] >= pd.to_datetime(selected_date_range[0]))
-    & (df_filtered["Data"] <= pd.to_datetime(selected_date_range[1]))
-]
-df_media_filtered = df_media_filtered[
-    (df_media_filtered["Data"] >= pd.to_datetime(selected_date_range[0]))
-    & (df_media_filtered["Data"] <= pd.to_datetime(selected_date_range[1]))
-]
-
-# Filtro por instituto
-if selected_instituto != "Todos":
-    df_filtered = df_filtered[df_filtered["Instituto"] == selected_instituto]
-
-# GRÁFICOS PRINCIPAIS
-col1, col2 = st.columns(2)
-
-# Gráfico 1: Evolução por Instituto
-with col1:
-    st.subheader(f"📈 Evolução - {selected_instituto}")
-
-    fig1 = go.Figure()
-
-    for candidato in selected_candidates:
-        if candidato in df_filtered.columns:
-            data_candidato = df_filtered[df_filtered[candidato].notna()]
-            fig1.add_trace(
+    for candidato in candidatos:
+        if candidato in df_filtrado.columns:
+            data_candidato = df_filtrado[df_filtrado[candidato].notna()]
+            fig.add_trace(
                 go.Scatter(
                     x=data_candidato["Data"],
                     y=data_candidato[candidato],
                     mode="lines+markers",
                     name=candidato,
-                    line=dict(color=PARTY_COLORS.get(candidato, "#000000"), width=1.5),
-                    marker=dict(size=8),
+                    line=dict(
+                        color=PARTY_COLORS.get(candidato, "#000000"),
+                        width=1.5 if len(candidatos) > 2 else 2,
+                    ),
+                    marker=dict(size=8 if len(candidatos) > 2 else 10),
                 )
             )
 
-    # Linha dos 50% (maioria absoluta)
-    if not df_filtered.empty:
-        fig1.add_hline(y=50, line_dash="dash", line_color="red", annotation_text="")
+    if not df_filtrado.empty:
+        fig.add_hline(y=50, line_dash="dash", line_color="red", annotation_text="")
 
-    fig1.update_layout(
+    fig.update_layout(
         xaxis_title="Data",
         yaxis_title="Intenção de Voto (%)",
         template="plotly_white",
         hovermode="x unified",
     )
 
-    st.plotly_chart(fig1, use_container_width=True)
+    return fig
 
-# Gráfico 2: Média de Todas as Pesquisas
-with col2:
-    st.subheader("📊 Média Móvel - Todos os Institutos")
 
-    fig2 = go.Figure()
+def criar_grafico_media_movel(
+    df_original, df_media_filtrado, candidatos, selected_date_range
+):
+    """Cria gráfico de média móvel"""
+    fig = go.Figure()
 
     # Pontos individuais (transparentes)
-    for candidato in selected_candidates:
-        if candidato in df_filtered.columns:
+    for candidato in candidatos:
+        if candidato in df_original.columns:
             data_candidato = df_original[df_original[candidato].notna()]
-            data_candidato = data_candidato[
-                (data_candidato["Data"] >= pd.to_datetime(selected_date_range[0]))
-                & (data_candidato["Data"] <= pd.to_datetime(selected_date_range[1]))
-            ]
-            fig2.add_trace(
+            data_candidato = filtrar_dados_por_data(
+                data_candidato, selected_date_range[0], selected_date_range[1]
+            )
+
+            fig.add_trace(
                 go.Scatter(
                     x=data_candidato["Data"],
                     y=data_candidato[candidato],
@@ -271,80 +236,312 @@ with col2:
                     name=f"{candidato} (dados)",
                     marker=dict(
                         color=PARTY_COLORS.get(candidato, "#000000"),
-                        opacity=0.3,
-                        size=5,
+                        opacity=0.3 if len(candidatos) > 2 else 0.4,
+                        size=5 if len(candidatos) > 2 else 8,
                     ),
                     showlegend=False,
                 )
             )
 
     # Linhas de média móvel
-    for candidato in selected_candidates:
-        if candidato in df_media_filtered.columns:
-            data_candidato = df_media_filtered[df_media_filtered[candidato].notna()]
-            fig2.add_trace(
+    for candidato in candidatos:
+        if candidato in df_media_filtrado.columns:
+            data_candidato = df_media_filtrado[df_media_filtrado[candidato].notna()]
+            fig.add_trace(
                 go.Scatter(
                     x=data_candidato["Data"],
                     y=data_candidato[candidato],
                     mode="lines",
                     name=candidato,
-                    line=dict(color=PARTY_COLORS.get(candidato, "#000000"), width=2),
+                    line=dict(
+                        color=PARTY_COLORS.get(candidato, "#000000"),
+                        width=2 if len(candidatos) > 2 else 3,
+                    ),
                     line_shape="spline",
                 )
             )
 
-    fig2.add_hline(
-        y=50,
-        line_dash="dash",
-        line_color="red",
-    )
+    fig.add_hline(y=50, line_dash="dash", line_color="red", annotation_text="")
 
-    fig2.update_layout(
+    fig.update_layout(
         xaxis_title="Data",
         yaxis_title="Intenção de Voto (%)",
         template="plotly_white",
         hovermode="x unified",
     )
 
-    st.plotly_chart(fig2, use_container_width=True)
+    return fig
 
-# RANKING DE INSTITUTOS
-st.subheader("🏆 Atividade dos Institutos de Pesquisa")
 
-instituto_counts = df_original["Instituto"].value_counts()
-fig4 = go.Figure(
-    go.Bar(
-        x=instituto_counts.values,
-        y=instituto_counts.index,
-        orientation="h",
-        marker=dict(color="#009739"),
+def criar_grafico_comparacao_direta(df_media_filtrado):
+    """Cria gráfico de barras para comparação direta (segundo turno)"""
+    if df_media_filtrado.empty:
+        return None
+
+    ultima_data = df_media_filtrado.loc[
+        df_media_filtrado["Data"] == df_media_filtrado["Data"].max()
+    ]
+
+    if ultima_data.empty:
+        return None
+
+    lula_val = (
+        ultima_data["Lula"].iloc[0] if not pd.isna(ultima_data["Lula"].iloc[0]) else 0
     )
+    tarcisio_val = (
+        ultima_data["Tarcísio"].iloc[0]
+        if not pd.isna(ultima_data["Tarcísio"].iloc[0])
+        else 0
+    )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=["Lula", "Tarcísio"],
+            y=[lula_val, tarcisio_val],
+            marker=dict(color=[PARTY_COLORS["Lula"], PARTY_COLORS["Tarcísio"]]),
+            text=[f"{lula_val:.1f}%", f"{tarcisio_val:.1f}%"],
+            textposition="auto",
+            width=[0.4, 0.4],  # Barras mais finas
+        )
+    )
+
+    fig.add_hline(y=50, line_dash="dash", line_color="red", annotation_text="")
+
+    fig.update_layout(
+        title="Cenário Atual - Segundo Turno",
+        yaxis_title="Intenção de Voto (%)",
+        template="plotly_white",
+        showlegend=False,
+    )
+
+    return fig
+
+
+def criar_ranking_institutos(df_original):
+    """Cria gráfico de ranking dos institutos"""
+    instituto_counts = df_original["Instituto"].value_counts()
+    fig = go.Figure(
+        go.Bar(
+            x=instituto_counts.values,
+            y=instituto_counts.index,
+            orientation="h",
+            marker=dict(color="#009739"),
+        )
+    )
+
+    fig.update_layout(
+        title="Número de Pesquisas por Instituto",
+        xaxis_title="Quantidade de Pesquisas",
+        yaxis_title="Instituto",
+        template="plotly_white",
+    )
+
+    return fig
+
+
+def criar_tabela_dados(df_filtrado, candidatos):
+    """Cria tabela formatada com os dados"""
+    colunas_mostrar = ["Instituto", "Data"] + candidatos
+    df_display = df_filtrado[colunas_mostrar].copy()
+    df_display = df_display.sort_values("Data", ascending=False)
+    df_display["Data"] = df_display["Data"].dt.strftime("%d/%m/%Y")
+    return df_display
+
+
+def criar_filtros_sidebar(df, titulo, key_suffix):
+    """Cria filtros na sidebar"""
+    st.sidebar.header(titulo)
+
+    # Data range
+    if not df["Data"].isna().all():
+        min_date = df["Data"].min().date()
+        max_date = df["Data"].max().date()
+
+        selected_date_range = st.sidebar.slider(
+            "📅 Período de Análise",
+            min_value=min_date,
+            max_value=max_date,
+            value=(min_date, max_date),
+            key=f"date_{key_suffix}",
+        )
+    else:
+        selected_date_range = (datetime.date.today(), datetime.date.today())
+
+    # Instituto
+    institutos = df["Instituto"].dropna().unique()
+    selected_instituto = st.sidebar.selectbox(
+        "🏢 Instituto de Pesquisa",
+        options=["Todos"] + list(institutos),
+        key=f"instituto_{key_suffix}",
+    )
+
+    return selected_date_range, selected_instituto
+
+
+# Carregar dados
+df_original, df_media, df_segundo_turno, df_media_2t = carregar_dados()
+
+if df_original.empty:
+    st.error("Não foi possível carregar os dados. Verifique sua conexão.")
+    st.stop()
+
+# HEADER PRINCIPAL
+st.markdown(
+    "<h1 style='text-align: center;'>🇧🇷 ELEIÇÕES PRESIDENCIAIS BRASIL 2026</h1>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    "<div style='text-align: center;'>Acompanhamento das Pesquisas de Intenção de Voto</div>",
+    unsafe_allow_html=True,
 )
 
-fig4.update_layout(
-    title="Número de Pesquisas por Instituto",
-    xaxis_title="Quantidade de Pesquisas",
-    yaxis_title="Instituto",
-    template="plotly_white",
+# MENU LATERAL - Escolha de cenário
+pagina = st.sidebar.radio(
+    "📌 Escolha o cenário", ["1️⃣ PRIMEIRO TURNO", "2️⃣ SEGUNDO TURNO"]
 )
 
-st.plotly_chart(fig4, use_container_width=True)
+# -----------------------------
+# PRIMEIRO TURNO
+# -----------------------------
+if pagina == "1️⃣ PRIMEIRO TURNO":
+    # Configurações primeiro turno
+    candidatos_principais = ["Lula", "Tarcísio", "Zema", "Branco / Nulo / Indeciso"]
+    todos_candidatos = candidatos_principais + [
+        "Ciro Gomes",
+        "Ratinho Jr.",
+        "Caiado",
+        "Outros",
+    ]
 
-# TABELA DE DADOS
-st.subheader("📋 Dados das Pesquisas")
+    # ---- Filtros Primeiro Turno ----
+    st.sidebar.header("🔎 Filtros - Primeiro Turno")
+    selected_date_range, selected_instituto = criar_filtros_sidebar(
+        df_original, "", "1t"
+    )
 
-# Mostrar apenas as colunas selecionadas
-colunas_mostrar = ["Instituto", "Data"] + selected_candidates
-df_display = df_filtered[colunas_mostrar].copy()
+    # Candidatos
+    selected_candidates = st.pills(
+        "👥 Candidatos",
+        options=todos_candidatos,
+        default=candidatos_principais,
+        selection_mode="multi",
+        key="candidatos_1t",
+    )
 
-# Ordenar por data (mais recente primeiro)
-df_display = df_display.sort_values("Data", ascending=False)
+    # Métricas
+    criar_metricas(
+        df_original, candidatos_principais[:4], "📊 Cenário Atual - Última Pesquisa"
+    )
 
-# Formatar data
-df_display["Data"] = df_display["Data"].dt.strftime("%d/%m/%Y")
+    # Filtrar dados
+    df_filtered = filtrar_dados_por_data(
+        df_original, selected_date_range[0], selected_date_range[1]
+    )
+    df_media_filtered = filtrar_dados_por_data(
+        df_media, selected_date_range[0], selected_date_range[1]
+    )
+    df_filtered = filtrar_dados_por_instituto(df_filtered, selected_instituto)
 
+    # Gráficos
+    col1, col2 = st.columns(2)
 
-st.dataframe(df_display, use_container_width=True)
+    with col1:
+        st.subheader(f"📈 Evolução - {selected_instituto}")
+        fig1 = criar_grafico_evolucao(
+            df_filtered, selected_candidates, selected_instituto
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col2:
+        st.subheader("📊 Média Móvel - Todos os Institutos")
+        fig2 = criar_grafico_media_movel(
+            df_original, df_media_filtered, selected_candidates, selected_date_range
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Ranking institutos
+    st.subheader("🏆 Atividade dos Institutos de Pesquisa")
+    fig4 = criar_ranking_institutos(df_original)
+    st.plotly_chart(fig4, use_container_width=True)
+
+    # Tabela
+    st.subheader("📋 Dados das Pesquisas")
+    df_display = criar_tabela_dados(df_filtered, selected_candidates)
+    st.dataframe(df_display, use_container_width=True)
+
+# -----------------------------
+# SEGUNDO TURNO
+# -----------------------------
+elif pagina == "2️⃣ SEGUNDO TURNO":
+    if not df_segundo_turno.empty:
+        # Configurações segundo turno
+        candidatos_2t = ["Lula", "Tarcísio"]
+
+        # ---- Filtros Segundo Turno ----
+        st.sidebar.header("🔎  Filtros - Segundo Turno")
+        selected_date_range_2t, selected_instituto_2t = criar_filtros_sidebar(
+            df_segundo_turno, "", "2t"
+        )
+
+        # Métricas
+        criar_metricas(
+            df_segundo_turno,
+            candidatos_2t,
+            "Cenário Segundo Turno - Última Pesquisa",
+        )
+
+        # Filtrar dados
+        df_filtered_2t = filtrar_dados_por_data(
+            df_segundo_turno, selected_date_range_2t[0], selected_date_range_2t[1]
+        )
+        df_media_filtered_2t = filtrar_dados_por_data(
+            df_media_2t, selected_date_range_2t[0], selected_date_range_2t[1]
+        )
+        df_filtered_2t = filtrar_dados_por_instituto(
+            df_filtered_2t, selected_instituto_2t
+        )
+
+        # Gráficos evolução e média móvel
+        col1_2t, col2_2t = st.columns(2)
+
+        with col1_2t:
+            st.subheader(f"📈 Evolução 2º Turno - {selected_instituto_2t}")
+            fig1_2t = criar_grafico_evolucao(
+                df_filtered_2t, candidatos_2t, selected_instituto_2t
+            )
+            st.plotly_chart(fig1_2t, use_container_width=True)
+
+        with col2_2t:
+            st.subheader("📊 Média Móvel 2º Turno")
+            fig2_2t = criar_grafico_media_movel(
+                df_segundo_turno,
+                df_media_filtered_2t,
+                candidatos_2t,
+                selected_date_range_2t,
+            )
+            st.plotly_chart(fig2_2t, use_container_width=True)
+
+        # ---- Comparação direta + Ranking institutos ----
+        st.subheader("⚔️ Comparação Direta e Atividade dos Institutos - Segundo Turno")
+        col3_2t, col4_2t = st.columns(2)
+
+        with col3_2t:
+            fig_comp = criar_grafico_comparacao_direta(df_media_filtered_2t)
+            if fig_comp:
+                st.plotly_chart(fig_comp, use_container_width=True)
+
+        with col4_2t:
+            fig_rank_2t = criar_ranking_institutos(df_segundo_turno)
+            st.plotly_chart(fig_rank_2t, use_container_width=True)
+
+        # Tabela
+        st.subheader("📋 Dados das Pesquisas - Segundo Turno")
+        df_display_2t = criar_tabela_dados(df_filtered_2t, candidatos_2t)
+        st.dataframe(df_display_2t, use_container_width=True)
+
+    else:
+        st.warning("⚠️ Dados do segundo turno não disponíveis")
 
 # FOOTER
 st.markdown("---")
@@ -357,6 +554,3 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
-
-
